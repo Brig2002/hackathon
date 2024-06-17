@@ -1,24 +1,21 @@
 extern crate cosmwasm_std;
 extern crate schemars;
 extern crate serde;
-extern crate cosmwasm_storage;
+
 
 use cosmwasm_std::{
-    to_binary, from_slice, Binary, CanonicalAddr, Env, Response, StdError, StdResult, Storage,
-    Deps, DepsMut, MessageInfo
+    to_json_binary, from_json, Binary, CanonicalAddr, Env, Response, StdError, StdResult, Storage,
+    Deps, DepsMut, MessageInfo,  Order,
 };
+use cw_storage_plus::Map;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use cosmwasm_storage::{PrefixedStorage, ReadonlyPrefixedStorage};
- 
-
-
-#[derive(Debug, Serialize)]
 
 
 
+// Define PollStruct and ContestantStruct as before...
 
-#[derive(Clone,  PartialEq,  )]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, JsonSchema)]
 pub struct PollStruct {
     pub id: u64,
     pub image: String,
@@ -33,11 +30,11 @@ pub struct PollStruct {
     pub timestamp: u64,
     pub voters: Vec<CanonicalAddr>,
     pub avatars: Vec<String>,
-    question: String,
-    options: Vec<String>,
+    pub question: String,
+    pub options: Vec<String>,
 }
 
-#[derive( Clone, Debug, PartialEq )]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, JsonSchema)]
 pub struct ContestantStruct {
     pub id: u64,
     pub image: String,
@@ -47,10 +44,10 @@ pub struct ContestantStruct {
     pub voters: Vec<CanonicalAddr>,
 }
 
-#[derive( Clone, Debug, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, JsonSchema)]
 pub struct InitMsg {}
 
-#[derive( Clone, Debug, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, JsonSchema)]
 pub enum HandleMsg {
     CreatePoll {
         image: String,
@@ -76,7 +73,7 @@ pub enum HandleMsg {
     Vote { poll_id: u64, contestant_id: u64 },
 }
 
-#[derive( Clone, Debug, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, JsonSchema)]
 pub enum QueryMsg {
     GetPolls {},
     GetPoll { id: u64 },
@@ -89,26 +86,28 @@ pub fn init(_deps: DepsMut, _env: Env, _msg: InitMsg) -> StdResult<Response> {
 }
 
 pub fn handle(
-    deps: DepsMut, 
-    env: Env, 
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
     msg: HandleMsg,
 ) -> StdResult<Response> {
     match msg {
         HandleMsg::CreatePoll { image, title, description, starts_at, ends_at } => {
-            create_poll(deps, env, image, title, description, starts_at, ends_at)
+            create_poll(deps, env, info, image, title, description, starts_at, ends_at)
         },
         HandleMsg::UpdatePoll { id, image, title, description, starts_at, ends_at } => {
-            update_poll(deps, env, id, image, title, description, starts_at, ends_at)
+            update_poll(deps, env, info, id, image, title, description, starts_at, ends_at)
         },
-        HandleMsg::DeletePoll { id } => delete_poll(deps, env, id),
-        HandleMsg::Contest { poll_id, name, avatar } => contest(deps, env, poll_id, name, avatar),
-        HandleMsg::Vote { poll_id, contestant_id } => vote(deps, env, poll_id, contestant_id),
+        HandleMsg::DeletePoll { id } => delete_poll(deps, env, info, id),
+        HandleMsg::Contest { poll_id, name, avatar } => contest(deps, env, info, poll_id, name, avatar),
+        HandleMsg::Vote { poll_id, contestant_id } => vote(deps, env, info, poll_id, contestant_id),
     }
 }
 
 fn create_poll(
     deps: DepsMut,
     env: Env,
+    info: MessageInfo,
     image: String,
     title: String,
     description: String,
@@ -116,10 +115,10 @@ fn create_poll(
     ends_at: u64,
 ) -> StdResult<Response> {
     // Fetch sender's address
-    let sender = &deps.api.canonical_address(&env.message.sender)?;
+    let sender = deps.api.addr_canonicalize(info.sender.as_str())?;
 
     // Generate a unique poll ID
-    let poll_id = generate_unique_poll_id( deps.storage)?;
+    let poll_id = generate_unique_poll_id(deps.storage)?;
 
     // Create a new poll
     let poll = PollStruct {
@@ -136,119 +135,39 @@ fn create_poll(
         timestamp: env.block.time.seconds(),
         voters: vec![],
         avatars: vec![],
-        question: String,
-        options: Vec<String>,
-
+        question: String::new(),
+        options: Vec::new(),
     };
 
     // Store the poll in storage
-    set_poll( deps.storage, &poll_id.to_be_bytes(), &poll)?;
+    set_poll(deps.storage, &poll_id.to_be_bytes(), &poll)?;
 
     Ok(Response::default())
 }
 
+const POLL_COUNT_KEY: &str = "poll_count";
+
 fn generate_unique_poll_id(storage: &mut dyn Storage) -> StdResult<u64> {
-    let mut poll_count_store = PrefixedStorage::new(storage, b"poll_count");
-    let count = poll_count_store.may_load::<u64>(&[])?;
-    let new_count = count.map_or(1, |c| c + 1);
-    poll_count_store.save(&[], &new_count)?;
+    let poll_count_store = Map::new( POLL_COUNT_KEY); // Corrected: Use `Map::new(storage, key)` to initialize `poll_count_store`
+    let count = poll_count_store.may_load(storage, &[] as &[u8])?.unwrap_or_default(); // Corrected: Use `may_load()` directly without passing `storage` and empty slice
+    let new_count = count + 1;
+    poll_count_store.save(storage, &[], &new_count)?; // Corrected: Use `save()` directly with `&new_count`
     Ok(new_count)
 }
 
+
+
+
 fn set_poll(storage: &mut dyn Storage, id: &[u8], poll: &PollStruct) -> StdResult<()> {
-    // Convert poll to binary
-    let poll_bin = to_binary(poll)?;
-
-    // Store poll in storage
+    let poll_bin = to_json_binary(poll)?;
     storage.set(id, &poll_bin);
-
     Ok(())
-}
-
-pub fn  query(
-    _deps: Deps,
-
-    _env: Env,
-    msg: QueryMsg,
- ) -> StdResult<Binary> {
-    match msg {
-        QueryMsg::GetPolls {} => get_polls(),
-        QueryMsg::GetPoll { id } => get_poll(&_deps, id,_env),
-        QueryMsg::GetContestants { poll_id } => get_contestants(&mut poll_id ),
-        QueryMsg::GetContestant { poll_id, contestant_id } => get_contestant(&mut  poll_id, contestant_id, _env),
-    }
-}
-
-fn get_contestants(deps: Deps, poll_id: u64) -> StdResult<Binary> {
-    // Fetch contestants for a poll from storage
-    let contestants: Vec<ContestantStruct> = load_contestants(deps. storage, poll_id)?;
-    to_binary(&contestants)
-}
-
-fn get_polls(deps: Deps,env: Env) -> StdResult<Binary> {
-    // Fetch all polls from storage
-    let polls: Vec<PollStruct> = load_all_polls( deps)?;
-    to_binary(&polls)
-}
-
-fn load_all_polls(deps: Deps) -> StdResult<Vec<PollStruct>> {
-    let prefix = b"poll";
-    let polls: StdResult<Vec<PollStruct>> = Storage::scan(PrefixedStorage, prefix)
-        .map(|item| {
-            let (_, value) = item?;
-            let poll: PollStruct = from_slice(&value)?;
-            Ok(poll)
-        })
-        .collect();
-    polls
-}
-
-fn get_poll(_deps: Deps, id: u64) -> StdResult<Binary> {
-    // Fetch poll by ID from storage
-    let poll = load_poll(&_deps, id)?;
-    to_binary(&poll)
-}
-
-fn load_poll(deps: &Deps, id: u64) -> StdResult<PollStruct> {
-    let poll_key = id.to_be_bytes();
-    let poll_bin = Storage::get(deps.storage, &poll_key).ok_or_else(|| StdError::generic_err("Poll not found"))?;
-    let poll: PollStruct = from_slice(&poll_bin)?;
-    Ok(poll)
-}
-
-fn get_contestant(_deps: Deps, poll_id: u64, contestant_id: u64) -> StdResult<Binary> {
-    // Fetch contestant by ID for a poll from storage
-    let contestant = load_contestant(_deps, poll_id, contestant_id)?;
-    to_binary(&contestant)
-}
-
-fn load_contestants(storage: &dyn Storage, poll_id: u64) -> StdResult<Vec<ContestantStruct>> {
-    let prefix = format!("contestants_{}", poll_id).into_bytes();
-    let contestants: StdResult<Vec<ContestantStruct>> = Storage::scan(storage, &prefix[..])
-        .map(|item| {
-            let (_, value) = item?;
-            let contestant: ContestantStruct = from_slice(&value)?;
-            Ok(contestant)
-        })
-        .collect();
-    contestants
-}
-
-fn load_contestant(storage: &dyn Storage, poll_id: u64, contestant_id: u64) -> StdResult<ContestantStruct> {
-    let key = format!("contestant_{}_{}", poll_id, contestant_id).into_bytes();
-    let contestant_bin = storage.get(&key).ok_or_else(|| StdError::generic_err("Contestant not found"))?;
-    let contestant: ContestantStruct = from_slice(&contestant_bin)?;
-    Ok(contestant)
-}
-
-fn delete_poll(deps: DepsMut, _env: Env, id: u64) -> StdResult<Response> {
-    // Implement delete poll logic here
-    Ok(Response::default())
 }
 
 fn update_poll(
     deps: DepsMut,
     _env: Env,
+    _info: MessageInfo,
     id: u64,
     image: String,
     title: String,
@@ -256,31 +175,163 @@ fn update_poll(
     starts_at: u64,
     ends_at: u64,
 ) -> StdResult<Response> {
-    // Implement update poll logic here
+    let poll_key = id.to_be_bytes();
+    let mut poll = load_poll(deps.as_ref(), id)?;
+
+    poll.image = image;
+    poll.title = title;
+    poll.description = description;
+    poll.starts_at = starts_at;
+    poll.ends_at = ends_at;
+
+    set_poll(deps.storage, &poll_key, &poll)?;
+
+    Ok(Response::default())
+}
+
+fn delete_poll(deps: DepsMut, _env: Env, _info: MessageInfo, id: u64) -> StdResult<Response> {
+    let poll_key = id.to_be_bytes();
+    let mut poll = load_poll(deps.as_ref(), id)?;
+
+    poll.deleted = true;
+
+    set_poll(deps.storage, &poll_key, &poll)?;
+
     Ok(Response::default())
 }
 
 fn contest(
     deps: DepsMut,
     _env: Env,
+    info: MessageInfo,
     poll_id: u64,
     name: String,
     avatar: String,
 ) -> StdResult<Response> {
-    // Implement contest logic here
+    let poll_key = poll_id.to_be_bytes();
+    let mut poll = load_poll(deps.as_ref(), poll_id)?;
+
+    let contestant_id = poll.contestants + 1;
+    poll.contestants = contestant_id;
+
+    let contestant = ContestantStruct {
+        id: contestant_id,
+        image: avatar.clone(),
+        name: name.clone(),
+        voter: deps.api.addr_canonicalize(info.sender.as_str())?,
+        votes: 0,
+        voters: vec![],
+    };
+
+    set_poll(deps.storage, &poll_key, &poll)?;
+    set_contestant(deps.storage, poll_id, &contestant)?;
+
     Ok(Response::default())
 }
 
 fn vote(
     deps: DepsMut,
     _env: Env,
+    info: MessageInfo,
     poll_id: u64,
     contestant_id: u64,
 ) -> StdResult<Response> {
-    // Implement vote logic here
+    let poll_key = poll_id.to_be_bytes();
+    let mut poll = load_poll(deps.as_ref(), poll_id)?;
+    let mut contestant = load_contestant(deps.storage, poll_id, contestant_id)?;
+
+    let voter = deps.api.addr_canonicalize(info.sender.as_str())?;
+
+    if poll.voters.contains(&voter) {
+        return Err(StdError::generic_err("You have already voted in this poll"));
+    }
+
+    poll.votes += 1;
+    poll.voters.push(voter.clone());
+
+    contestant.votes += 1;
+    contestant.voters.push(voter);
+
+    set_poll(deps.storage, &poll_key, &poll)?;
+    set_contestant(deps.storage, poll_id, &contestant)?;
+
     Ok(Response::default())
-} 
+}
 
+fn set_contestant(storage: &mut dyn Storage, poll_id: u64, contestant: &ContestantStruct) -> StdResult<()> {
+    let key = format!("contestant_{}_{}", poll_id, contestant.id).into_bytes();
+    let contestant_bin = to_json_binary(contestant)?;
+    storage.set(&key, &contestant_bin);
+    Ok(())
+}
 
+pub fn query(
+    deps: Deps,
+    _env: Env,
+    msg: QueryMsg,
+) -> StdResult<Binary> {
+    match msg {
+        QueryMsg::GetPolls {} => get_polls(deps),
+        QueryMsg::GetPoll { id } => get_poll(deps, id),
+        QueryMsg::GetContestants { poll_id } => get_contestants(deps, poll_id),
+        QueryMsg::GetContestant { poll_id, contestant_id } => get_contestant(deps, poll_id, contestant_id),
+    }
+}
 
+fn get_polls(deps: Deps) -> StdResult<Binary> {
+    let polls: Vec<PollStruct> = load_all_polls(deps)?;
+    to_json_binary(&polls)
+}
 
+fn load_all_polls(deps: Deps) -> StdResult<Vec<PollStruct>> {
+    let prefix = b"poll";
+    let polls: StdResult<Vec<PollStruct>> = deps.storage.range(Some(prefix), None, Order::Ascending)
+        .map(|item| {
+            let (_, value) = item;
+            let poll: PollStruct = from_json(&value)?;
+            Ok(poll)
+        })
+        .collect();
+    polls
+}
+
+fn get_poll(deps: Deps, id: u64) -> StdResult<Binary> {
+    let poll = load_poll(deps, id)?;
+    to_json_binary(&poll)
+}
+
+fn load_poll(deps: Deps, id: u64) -> StdResult<PollStruct> {
+    let poll_key = id.to_be_bytes();
+    let poll_bin = deps.storage.get(&poll_key).ok_or_else(|| StdError::generic_err("Poll not found"))?;
+    let poll: PollStruct = from_json(&poll_bin)?;
+    Ok(poll)
+}
+
+fn get_contestants(deps: Deps, poll_id: u64) -> StdResult<Binary> {
+    let contestants: Vec<ContestantStruct> = load_contestants(deps.storage, poll_id)?;
+    to_json_binary(&contestants)
+}
+
+fn load_contestants(storage: &dyn Storage, poll_id: u64) -> StdResult<Vec<ContestantStruct>> {
+    let prefix = format!("contestants_{}", poll_id).into_bytes();
+    let contestants: StdResult<Vec<ContestantStruct>> = storage.range(Some(&prefix), None, Order::Ascending)
+        .map(|item| {
+            let (_, value) = item;
+            let contestant: ContestantStruct = from_json(&value)?;
+            Ok(contestant)
+        })
+        .collect();
+    contestants
+}
+
+fn get_contestant(deps: Deps, poll_id: u64, contestant_id: u64) -> StdResult<Binary> {
+    let contestant = load_contestant(deps.storage, poll_id, contestant_id)?;
+    to_json_binary(&contestant)
+}
+
+fn load_contestant(storage: &dyn Storage, poll_id: u64, contestant_id: u64) -> StdResult<ContestantStruct> {
+    let key = format!("contestant_{}_{}", poll_id, contestant_id).into_bytes();
+    let contestant_bin = storage.get(&key).ok_or_else(|| StdError::generic_err("Contestant not found"))?;
+    let contestant: ContestantStruct = from_json(&contestant_bin)?;
+    Ok(contestant)
+}
